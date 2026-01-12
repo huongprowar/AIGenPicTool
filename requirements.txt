@@ -10,6 +10,10 @@ requests>=2.31.0
 # OpenAI API (ChatGPT)
 openai>=1.0.0
 
+# Browser automation for ChatGPT Web
+selenium>=4.15.0
+undetected-chromedriver>=3.5.0
+
 # Google Generative AI (Gemini)
 google-generativeai>=0.3.0
 

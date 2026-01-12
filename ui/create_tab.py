@@ -19,6 +19,7 @@ from datetime import datetime
 
 from services.config_service import config_service
 from services.chatgpt_service import chatgpt_service
+from services.chatgpt_web_service import chatgpt_web_service
 from services.gemini_service import gemini_service, ImageStatus
 from utils.prompt_parser import parse_prompts, ParsedPrompt
 from utils.image_downloader import ImageDownloader
@@ -45,7 +46,7 @@ def map_size_to_api_format(image_size: tuple) -> str:
 class ImageGeneratorWorker(QObject):
     """
     Worker thread để tạo ảnh không block UI
-    Sử dụng Google Flow API (generate_google_flow_images)
+    Hỗ trợ cả ImageFX (Google Flow) và Gemini API
     """
 
     # Signals
@@ -57,11 +58,20 @@ class ImageGeneratorWorker(QObject):
     image_failed = Signal(int, str)  # index, error
     log_message = Signal(str)  # log message
 
-    def __init__(self, prompts: List[ParsedPrompt], image_size: tuple = (1024, 1024), bearer_token: str = ""):
+    def __init__(
+        self,
+        prompts: List[ParsedPrompt],
+        image_size: tuple = (1024, 1024),
+        bearer_token: str = "",
+        provider: str = "imagefx",
+        gemini_api_key: str = ""
+    ):
         super().__init__()
         self._prompts = prompts
         self._image_size = image_size
         self._bearer_token = bearer_token
+        self._provider = provider  # "imagefx" hoặc "gemini"
+        self._gemini_api_key = gemini_api_key
         self._should_stop = False
 
     def stop(self):
@@ -69,11 +79,14 @@ class ImageGeneratorWorker(QObject):
         self._should_stop = True
 
     def run(self):
-        """Thực thi tạo ảnh sử dụng Google Flow API"""
+        """Thực thi tạo ảnh"""
         self.started.emit()
         total = len(self._prompts)
 
-        # Tạo event loop cho async
+        provider_name = "ImageFX" if self._provider == "imagefx" else "Gemini"
+        self.log_message.emit(f"Sử dụng provider: {provider_name}")
+
+        # Tạo event loop cho async (dùng cho ImageFX)
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
 
@@ -85,40 +98,13 @@ class ImageGeneratorWorker(QObject):
 
                 self.image_started.emit(prompt_obj.index)
                 self.progress.emit(i + 1, total)
-                self.log_message.emit(f"[{i+1}/{total}] Đang tạo ảnh #{prompt_obj.index} với Google Flow...")
+                self.log_message.emit(f"[{i+1}/{total}] Đang tạo ảnh #{prompt_obj.index} với {provider_name}...")
 
                 try:
-                    # Tạo ImageRequest cho Google Flow API
-                    size_str = map_size_to_api_format(self._image_size)
-                    request = ImageRequest(
-                        model="IMAGEN_4",
-                        prompt=prompt_obj.content,
-                        n=1,
-                        size=size_str,
-                        response_format="b64_json"
-                    )
-
-                    # Gọi async function
-                    result = loop.run_until_complete(
-                        generate_google_flow_images(request, self._bearer_token)
-                    )
-
-                    # Xử lý kết quả
-                    if result.data and len(result.data) > 0:
-                        # Lấy ảnh đầu tiên
-                        image_data_obj = result.data[0]
-                        # Decode base64 thành bytes
-                        image_bytes = base64.b64decode(image_data_obj.b64_json)
-
-                        self.image_completed.emit(
-                            prompt_obj.index,
-                            image_bytes,
-                            "image/png"  # Google Flow trả về PNG
-                        )
-                        self.log_message.emit(f"[{i+1}/{total}] Ảnh #{prompt_obj.index} - Hoàn thành!")
+                    if self._provider == "imagefx":
+                        self._generate_with_imagefx(loop, prompt_obj, i, total)
                     else:
-                        self.image_failed.emit(prompt_obj.index, "Không có dữ liệu ảnh trong response")
-                        self.log_message.emit(f"[{i+1}/{total}] Ảnh #{prompt_obj.index} - Lỗi: Không có dữ liệu ảnh")
+                        self._generate_with_gemini(prompt_obj, i, total)
 
                 except Exception as e:
                     error_msg = str(e)
@@ -129,6 +115,49 @@ class ImageGeneratorWorker(QObject):
             loop.close()
 
         self.finished.emit()
+
+    def _generate_with_imagefx(self, loop, prompt_obj: ParsedPrompt, i: int, total: int):
+        """Tạo ảnh với ImageFX (Google Flow API)"""
+        size_str = map_size_to_api_format(self._image_size)
+        request = ImageRequest(
+            model="IMAGEN_4",
+            prompt=prompt_obj.content,
+            n=1,
+            size=size_str,
+            response_format="b64_json"
+        )
+
+        result = loop.run_until_complete(
+            generate_google_flow_images(request, self._bearer_token)
+        )
+
+        if result.data and len(result.data) > 0:
+            image_data_obj = result.data[0]
+            image_bytes = base64.b64decode(image_data_obj.b64_json)
+
+            self.image_completed.emit(prompt_obj.index, image_bytes, "image/png")
+            self.log_message.emit(f"[{i+1}/{total}] Ảnh #{prompt_obj.index} - Hoàn thành!")
+        else:
+            self.image_failed.emit(prompt_obj.index, "Không có dữ liệu ảnh trong response")
+            self.log_message.emit(f"[{i+1}/{total}] Ảnh #{prompt_obj.index} - Lỗi: Không có dữ liệu ảnh")
+
+    def _generate_with_gemini(self, prompt_obj: ParsedPrompt, i: int, total: int):
+        """Tạo ảnh với Gemini API"""
+        result = gemini_service.generate_image(
+            prompt=prompt_obj.content,
+            api_key=self._gemini_api_key,
+            max_retries=3,
+            retry_delay=2.0,
+            image_size=self._image_size
+        )
+
+        if result.success and result.image_data:
+            self.image_completed.emit(prompt_obj.index, result.image_data, result.mime_type)
+            self.log_message.emit(f"[{i+1}/{total}] Ảnh #{prompt_obj.index} - Hoàn thành!")
+        else:
+            error_msg = result.error_message or "Không thể tạo ảnh"
+            self.image_failed.emit(prompt_obj.index, error_msg)
+            self.log_message.emit(f"[{i+1}/{total}] Ảnh #{prompt_obj.index} - Lỗi: {error_msg}")
 
 
 class ImagePreviewDialog(QDialog):
@@ -202,17 +231,56 @@ class CreateTab(QWidget):
         title.setStyleSheet("font-size: 20px; font-weight: bold; margin-bottom: 10px;")
         left_layout.addWidget(title)
 
-        # ========== OPTION 1: ChatGPT Prompt ==========
-        chatgpt_group = QGroupBox("Tùy chọn 1: Tạo prompt với ChatGPT")
+        # ========== OPTION 1: ChatGPT Prompt (Web) ==========
+        chatgpt_group = QGroupBox("Tùy chọn 1: Tạo prompt với ChatGPT (Web)")
         chatgpt_group.setStyleSheet("QGroupBox { font-weight: bold; }")
         chatgpt_layout = QVBoxLayout()
+
+        # Browser control buttons
+        browser_layout = QHBoxLayout()
+
+        self.open_browser_btn = QPushButton("Mở trình duyệt ChatGPT")
+        self.open_browser_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #FF9800;
+                color: white;
+                padding: 6px 12px;
+                font-size: 12px;
+                border-radius: 4px;
+            }
+            QPushButton:hover { background-color: #F57C00; }
+        """)
+        self.open_browser_btn.clicked.connect(self._on_open_browser_clicked)
+        browser_layout.addWidget(self.open_browser_btn)
+
+        self.browser_status_label = QLabel("Trình duyệt: Chưa mở")
+        self.browser_status_label.setStyleSheet("color: #666; font-size: 11px;")
+        browser_layout.addWidget(self.browser_status_label)
+        browser_layout.addStretch()
+
+        self.close_browser_btn = QPushButton("Đóng")
+        self.close_browser_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #757575;
+                color: white;
+                padding: 6px 12px;
+                font-size: 12px;
+                border-radius: 4px;
+            }
+            QPushButton:hover { background-color: #616161; }
+        """)
+        self.close_browser_btn.clicked.connect(self._on_close_browser_clicked)
+        browser_layout.addWidget(self.close_browser_btn)
+
+        chatgpt_layout.addLayout(browser_layout)
 
         self.prompt_input = QTextEdit()
         self.prompt_input.setPlaceholderText(
             "Nhập mô tả ý tưởng của bạn ở đây...\n\n"
             "Ví dụ:\n"
             "- Tạo 3 ảnh về phong cảnh Việt Nam vào buổi hoàng hôn\n"
-            "- Thiết kế logo cho startup công nghệ AI, phong cách minimal"
+            "- Thiết kế logo cho startup công nghệ AI, phong cách minimal\n\n"
+            "Lưu ý: Nhấn 'Mở trình duyệt ChatGPT' và đăng nhập trước khi tạo."
         )
         self.prompt_input.setMinimumHeight(80)
         chatgpt_layout.addWidget(self.prompt_input)
@@ -227,7 +295,7 @@ class CreateTab(QWidget):
         num_layout.addWidget(self.num_prompts_spin)
         num_layout.addStretch()
 
-        self.start_btn = QPushButton("Tạo với ChatGPT")
+        self.start_btn = QPushButton("Tạo với ChatGPT Web")
         self.start_btn.setStyleSheet("""
             QPushButton {
                 background-color: #2196F3;
@@ -290,6 +358,25 @@ class CreateTab(QWidget):
         # ========== Common Settings ==========
         settings_group = QGroupBox("Cài đặt chung")
         settings_layout = QVBoxLayout()
+
+        # Image Provider - Dropdown
+        provider_layout = QHBoxLayout()
+        provider_layout.addWidget(QLabel("Tạo ảnh bằng:"))
+
+        self.image_provider_combo = QComboBox()
+        self.image_provider_combo.setMinimumWidth(220)
+
+        self.IMAGE_PROVIDERS = [
+            ("imagefx", "ImageFX (Google Labs) - Khuyến nghị"),
+            ("gemini", "Gemini API"),
+        ]
+
+        for provider_value, display_name in self.IMAGE_PROVIDERS:
+            self.image_provider_combo.addItem(display_name, provider_value)
+
+        provider_layout.addWidget(self.image_provider_combo)
+        provider_layout.addStretch()
+        settings_layout.addLayout(provider_layout)
 
         # Image Size - Dropdown
         size_layout = QHBoxLayout()
@@ -523,17 +610,53 @@ class CreateTab(QWidget):
         # Hiện placeholder
         self.placeholder.setVisible(True)
 
+    def _on_open_browser_clicked(self):
+        """Handler mở trình duyệt ChatGPT"""
+        self._log("Đang mở trình duyệt Chrome...")
+        self.open_browser_btn.setEnabled(False)
+        self.browser_status_label.setText("Trình duyệt: Đang mở...")
+        self.browser_status_label.setStyleSheet("color: #FF9800; font-size: 11px;")
+
+        chatgpt_web_service.set_status_callback(self._log)
+
+        import threading
+        def open_browser():
+            result = chatgpt_web_service.open_browser_and_wait_login()
+            # Update UI in main thread
+            if result.success:
+                self.browser_status_label.setText("Trình duyệt: Đã sẵn sàng")
+                self.browser_status_label.setStyleSheet("color: #4CAF50; font-size: 11px; font-weight: bold;")
+            else:
+                self.browser_status_label.setText(f"Lỗi: {result.error_message[:30]}...")
+                self.browser_status_label.setStyleSheet("color: #f44336; font-size: 11px;")
+            self.open_browser_btn.setEnabled(True)
+
+        thread = threading.Thread(target=open_browser, daemon=True)
+        thread.start()
+
+    def _on_close_browser_clicked(self):
+        """Handler đóng trình duyệt"""
+        chatgpt_web_service.close_browser()
+        self.browser_status_label.setText("Trình duyệt: Đã đóng")
+        self.browser_status_label.setStyleSheet("color: #666; font-size: 11px;")
+        self._log("Đã đóng trình duyệt ChatGPT")
+
     def _on_start_clicked(self):
-        """Handler khi bấm nút Bắt đầu"""
-        # Validate config
-        errors = config_service.validate()
-        if errors:
-            error_msg = "\n".join(f"- {v}" for v in errors.values())
-            QMessageBox.warning(
+        """Handler khi bấm nút Bắt đầu (dùng ChatGPT Web)"""
+        # Validate config dựa trên provider
+        if not self._validate_provider_config():
+            return
+
+        # Kiểm tra trình duyệt đã mở chưa
+        if not chatgpt_web_service.is_browser_open():
+            reply = QMessageBox.question(
                 self,
-                "Cấu hình chưa đầy đủ",
-                f"Vui lòng cấu hình đầy đủ trong tab Cài đặt:\n\n{error_msg}"
+                "Trình duyệt chưa mở",
+                "Trình duyệt ChatGPT chưa được mở.\nBạn có muốn mở ngay không?",
+                QMessageBox.Yes | QMessageBox.No
             )
+            if reply == QMessageBox.Yes:
+                self._on_open_browser_clicked()
             return
 
         # Validate prompt
@@ -565,19 +688,47 @@ class CreateTab(QWidget):
         # Disable controls
         self._disable_controls()
 
-        # Step 1: Call ChatGPT
-        self._log("Bước 1: Gọi ChatGPT để tạo image prompts...")
-        self._call_chatgpt(prompt)
+        # Step 1: Call ChatGPT Web
+        self._log("Bước 1: Gửi prompt đến ChatGPT Web...")
+        self._call_chatgpt_web(prompt)
+
+    def _validate_provider_config(self) -> bool:
+        """Validate config dựa trên provider được chọn"""
+        provider = self._get_selected_provider()
+        config = config_service.config
+
+        if provider == "imagefx":
+            if not config.google_bearer_token:
+                QMessageBox.warning(
+                    self,
+                    "Cấu hình chưa đầy đủ",
+                    "Bạn đã chọn ImageFX.\nVui lòng cấu hình Google Bearer Token trong tab Cài đặt."
+                )
+                return False
+        else:  # gemini
+            if not config.gemini_api_key:
+                QMessageBox.warning(
+                    self,
+                    "Cấu hình chưa đầy đủ",
+                    "Bạn đã chọn Gemini.\nVui lòng cấu hình Gemini API Key trong tab Cài đặt."
+                )
+                return False
+
+        return True
 
     def _on_direct_start_clicked(self):
         """Handler khi bấm nút Tạo ảnh trực tiếp (bỏ qua ChatGPT)"""
-        # Validate config - chỉ cần bearer token
+        # Validate config dựa trên provider
+        if not self._validate_provider_config():
+            return
+
         config = config_service.config
-        if not config.google_bearer_token:
+        # Giữ lại check output directory
+        if not config.output_directory:
             QMessageBox.warning(
                 self,
                 "Cấu hình chưa đầy đủ",
-                "Vui lòng cấu hình Google Bearer Token trong tab Cài đặt."
+                "Vui lòng cấu hình thư mục lưu ảnh trong tab Cài đặt."
             )
             return
 
@@ -645,7 +796,9 @@ class CreateTab(QWidget):
         self._create_image_items()
 
         # Start image generation
-        self._log("Bắt đầu tạo ảnh với Google Flow API...")
+        provider = self._get_selected_provider()
+        provider_name = "ImageFX" if provider == "imagefx" else "Gemini"
+        self._log(f"Bắt đầu tạo ảnh với {provider_name}...")
         self._start_image_generation()
 
     def _disable_controls(self):
@@ -704,6 +857,67 @@ class CreateTab(QWidget):
         self._log("Bước 3: Tạo ảnh với Gemini...")
         self._start_image_generation()
 
+    def _call_chatgpt_web(self, prompt: str):
+        """Gọi ChatGPT qua Web browser"""
+        num_prompts = self.num_prompts_spin.value()
+
+        chatgpt_web_service.set_status_callback(self._log)
+
+        self._log("Đang gửi prompt đến ChatGPT Web...")
+
+        import threading
+        def call_web():
+            result = chatgpt_web_service.generate_image_prompts(
+                user_prompt=prompt,
+                num_prompts=num_prompts
+            )
+
+            # Xử lý kết quả trong main thread
+            if result.success:
+                self._handle_chatgpt_web_success(result.content)
+            else:
+                self._handle_chatgpt_web_error(result.error_message)
+
+        thread = threading.Thread(target=call_web, daemon=True)
+        thread.start()
+
+    def _handle_chatgpt_web_success(self, content: str):
+        """Xử lý khi ChatGPT Web trả về thành công"""
+        # Step 2: Parse prompts
+        self._log("Bước 2: Parse image prompts từ response...")
+        self._log(f"Response từ ChatGPT:\n{content[:500]}...")
+
+        self._parsed_prompts = parse_prompts(content)
+
+        if not self._parsed_prompts:
+            self._log("Không tìm thấy image prompt nào trong response!")
+            QMessageBox.warning(
+                self,
+                "Lỗi",
+                "Không thể parse image prompts từ ChatGPT response."
+            )
+            self._reset_controls()
+            return
+
+        self._log(f"Đã tìm thấy {len(self._parsed_prompts)} image prompts")
+
+        # Create image items
+        self._create_image_items()
+
+        # Step 3: Generate images
+        self._log("Bước 3: Tạo ảnh...")
+        self._start_image_generation()
+
+    def _handle_chatgpt_web_error(self, error_message: str):
+        """Xử lý khi ChatGPT Web gặp lỗi"""
+        self._log(f"Lỗi ChatGPT Web: {error_message}")
+        QMessageBox.critical(
+            self,
+            "Lỗi ChatGPT Web",
+            f"Không thể tạo image prompts:\n{error_message}"
+        )
+        self._reset_controls()
+
     def _create_image_items(self):
         """Tạo các image item widgets"""
         self.placeholder.setVisible(False)
@@ -720,8 +934,12 @@ class CreateTab(QWidget):
             self._image_items.append(item)
             self.results_layout.addWidget(item)
 
+    def _get_selected_provider(self) -> str:
+        """Lấy provider đã chọn từ dropdown"""
+        return self.image_provider_combo.currentData() or "imagefx"
+
     def _start_image_generation(self):
-        """Bắt đầu tạo ảnh trong background thread sử dụng Google Flow API"""
+        """Bắt đầu tạo ảnh trong background thread"""
         self.progress_bar.setVisible(True)
         self.progress_bar.setMaximum(len(self._parsed_prompts))
         self.progress_bar.setValue(0)
@@ -729,12 +947,22 @@ class CreateTab(QWidget):
         # Lấy kích thước ảnh đã chọn
         image_size = self._get_image_size()
 
-        # Lấy bearer token từ config
+        # Lấy provider đã chọn
+        provider = self._get_selected_provider()
+
+        # Lấy config
         config = config_service.config
         bearer_token = config.google_bearer_token
+        gemini_api_key = config.gemini_api_key
 
-        # Create worker và thread với image_size và bearer_token
-        self._worker = ImageGeneratorWorker(self._parsed_prompts, image_size, bearer_token)
+        # Create worker với provider
+        self._worker = ImageGeneratorWorker(
+            prompts=self._parsed_prompts,
+            image_size=image_size,
+            bearer_token=bearer_token,
+            provider=provider,
+            gemini_api_key=gemini_api_key
+        )
         self._worker_thread = QThread()
         self._worker.moveToThread(self._worker_thread)
 
@@ -821,7 +1049,7 @@ class CreateTab(QWidget):
                 break
 
     def _on_regenerate_image(self, index: int):
-        """Handler tạo lại ảnh sử dụng Google Flow API"""
+        """Handler tạo lại ảnh"""
         # Tìm prompt tương ứng
         prompt_obj = None
         for p in self._parsed_prompts:
@@ -842,38 +1070,60 @@ class CreateTab(QWidget):
         if not item_widget:
             return
 
-        self._log(f"Tạo lại ảnh #{index} với Google Flow...")
+        # Lấy provider đã chọn
+        provider = self._get_selected_provider()
+        provider_name = "ImageFX" if provider == "imagefx" else "Gemini"
+
+        self._log(f"Tạo lại ảnh #{index} với {provider_name}...")
         item_widget.set_status(ImageStatus.PROCESSING)
 
-        # Tạo lại ảnh sử dụng Google Flow API
         config = config_service.config
-        bearer_token = config.google_bearer_token
         image_size = self._get_image_size()
-        size_str = map_size_to_api_format(image_size)
 
         try:
-            # Tạo ImageRequest
-            request = ImageRequest(
-                model="IMAGEN_4",
-                prompt=prompt_obj.content,
-                n=1,
-                size=size_str,
-                response_format="b64_json"
-            )
+            if provider == "imagefx":
+                # Tạo ảnh với ImageFX
+                bearer_token = config.google_bearer_token
+                size_str = map_size_to_api_format(image_size)
 
-            # Gọi async function
-            result = asyncio.run(generate_google_flow_images(request, bearer_token))
+                request = ImageRequest(
+                    model="IMAGEN_4",
+                    prompt=prompt_obj.content,
+                    n=1,
+                    size=size_str,
+                    response_format="b64_json"
+                )
 
-            if result.data and len(result.data) > 0:
-                image_data_obj = result.data[0]
-                image_bytes = base64.b64decode(image_data_obj.b64_json)
+                result = asyncio.run(generate_google_flow_images(request, bearer_token))
 
-                item_widget.set_status(ImageStatus.SUCCESS)
-                item_widget.set_image(image_bytes, "image/png")
-                self._log(f"Tạo lại ảnh #{index} thành công!")
+                if result.data and len(result.data) > 0:
+                    image_data_obj = result.data[0]
+                    image_bytes = base64.b64decode(image_data_obj.b64_json)
+
+                    item_widget.set_status(ImageStatus.SUCCESS)
+                    item_widget.set_image(image_bytes, "image/png")
+                    self._log(f"Tạo lại ảnh #{index} thành công!")
+                else:
+                    item_widget.set_error("Không có dữ liệu ảnh trong response")
+                    self._log(f"Tạo lại ảnh #{index} thất bại: Không có dữ liệu ảnh")
             else:
-                item_widget.set_error("Không có dữ liệu ảnh trong response")
-                self._log(f"Tạo lại ảnh #{index} thất bại: Không có dữ liệu ảnh")
+                # Tạo ảnh với Gemini
+                result = gemini_service.generate_image(
+                    prompt=prompt_obj.content,
+                    api_key=config.gemini_api_key,
+                    max_retries=3,
+                    retry_delay=2.0,
+                    image_size=image_size
+                )
+
+                if result.success and result.image_data:
+                    item_widget.set_status(ImageStatus.SUCCESS)
+                    item_widget.set_image(result.image_data, result.mime_type)
+                    self._log(f"Tạo lại ảnh #{index} thành công!")
+                else:
+                    error_msg = result.error_message or "Không thể tạo ảnh"
+                    item_widget.set_error(error_msg)
+                    self._log(f"Tạo lại ảnh #{index} thất bại: {error_msg}")
 
         except Exception as e:
             error_msg = str(e)
