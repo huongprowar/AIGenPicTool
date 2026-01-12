@@ -4,7 +4,8 @@ Image Item Widget - Widget hiển thị mỗi ảnh trong danh sách
 
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel,
-    QPushButton, QCheckBox, QFrame, QSizePolicy
+    QPushButton, QCheckBox, QFrame, QSizePolicy,
+    QDialog, QTextEdit, QDialogButtonBox
 )
 from PySide6.QtCore import Qt, Signal, QSize
 from PySide6.QtGui import QPixmap, QImage
@@ -14,6 +15,50 @@ from typing import Optional
 from enum import Enum
 
 from services.gemini_service import ImageStatus
+
+
+class EditPromptDialog(QDialog):
+    """Dialog để chỉnh sửa prompt"""
+
+    def __init__(self, current_prompt: str, index: int, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle(f"Chỉnh sửa Prompt #{index}")
+        self.setMinimumSize(500, 300)
+        self.resize(600, 350)
+
+        layout = QVBoxLayout(self)
+
+        # Label hướng dẫn
+        label = QLabel("Chỉnh sửa prompt bên dưới:")
+        label.setStyleSheet("font-weight: bold; margin-bottom: 5px;")
+        layout.addWidget(label)
+
+        # Text edit cho prompt
+        self.prompt_edit = QTextEdit()
+        self.prompt_edit.setPlainText(current_prompt)
+        self.prompt_edit.setStyleSheet("""
+            QTextEdit {
+                font-size: 13px;
+                padding: 10px;
+                border: 1px solid #ccc;
+                border-radius: 5px;
+            }
+        """)
+        layout.addWidget(self.prompt_edit)
+
+        # Buttons
+        button_box = QDialogButtonBox(
+            QDialogButtonBox.Save | QDialogButtonBox.Cancel
+        )
+        button_box.button(QDialogButtonBox.Save).setText("Lưu")
+        button_box.button(QDialogButtonBox.Cancel).setText("Hủy")
+        button_box.accepted.connect(self.accept)
+        button_box.rejected.connect(self.reject)
+        layout.addWidget(button_box)
+
+    def get_prompt(self) -> str:
+        """Lấy prompt đã chỉnh sửa"""
+        return self.prompt_edit.toPlainText().strip()
 
 
 class ImageItemWidget(QWidget):
@@ -30,6 +75,7 @@ class ImageItemWidget(QWidget):
     # Signals
     view_clicked = Signal(int)       # index
     regenerate_clicked = Signal(int)  # index
+    edit_prompt_clicked = Signal(int, str)  # index, new_prompt
     selection_changed = Signal(int, bool)  # index, selected
 
     # Kích thước thumbnail
@@ -140,12 +186,46 @@ class ImageItemWidget(QWidget):
         self.regenerate_btn.clicked.connect(lambda: self.regenerate_clicked.emit(self._index))
         button_layout.addWidget(self.regenerate_btn)
 
+        self.edit_btn = QPushButton("Sửa prompt")
+        self.edit_btn.setFixedWidth(80)
+        self.edit_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #ff9800;
+                color: white;
+                border: none;
+                border-radius: 4px;
+            }
+            QPushButton:hover {
+                background-color: #f57c00;
+            }
+        """)
+        self.edit_btn.clicked.connect(self._on_edit_clicked)
+        button_layout.addWidget(self.edit_btn)
+
         button_layout.addStretch()
         layout.addLayout(button_layout)
 
     def _on_checkbox_changed(self, state):
         """Handler khi checkbox thay đổi"""
         self.selection_changed.emit(self._index, state == Qt.Checked)
+
+    def _on_edit_clicked(self):
+        """Handler khi bấm nút Sửa prompt"""
+        dialog = EditPromptDialog(self._prompt, self._index, self)
+        if dialog.exec() == QDialog.Accepted:
+            new_prompt = dialog.get_prompt()
+            if new_prompt and new_prompt != self._prompt:
+                # Cập nhật prompt
+                self.set_prompt(new_prompt)
+                # Emit signal để tạo lại ảnh với prompt mới
+                self.edit_prompt_clicked.emit(self._index, new_prompt)
+
+    def set_prompt(self, new_prompt: str):
+        """Cập nhật prompt mới"""
+        self._prompt = new_prompt
+        # Cập nhật hiển thị
+        prompt_display = self._prompt[:80] + "..." if len(self._prompt) > 80 else self._prompt
+        self.prompt_label.setText(prompt_display)
 
     def _update_status_display(self):
         """Cập nhật hiển thị trạng thái"""

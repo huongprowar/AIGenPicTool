@@ -89,6 +89,22 @@ class SettingsTab(QWidget):
 
         api_layout.addRow("Gemini API Key:", gemini_row)
 
+        # Google Bearer Token
+        self.google_token_input = QLineEdit()
+        self.google_token_input.setPlaceholderText("Nhập Google Bearer Token cho Google Flow API")
+        self.google_token_input.setEchoMode(QLineEdit.Password)
+        self.google_token_input.setMinimumWidth(400)
+
+        google_row = QHBoxLayout()
+        google_row.addWidget(self.google_token_input)
+
+        self.toggle_google_btn = QPushButton("Hiện")
+        self.toggle_google_btn.setFixedWidth(60)
+        self.toggle_google_btn.clicked.connect(lambda: self._toggle_password(self.google_token_input, self.toggle_google_btn))
+        google_row.addWidget(self.toggle_google_btn)
+
+        api_layout.addRow("Google Bearer Token:", google_row)
+
         api_group.setLayout(api_layout)
         layout.addWidget(api_group)
 
@@ -240,6 +256,7 @@ class SettingsTab(QWidget):
 
         self.chatgpt_key_input.setText(config.chatgpt_api_key)
         self.gemini_key_input.setText(config.gemini_api_key)
+        self.google_token_input.setText(config.google_bearer_token)
         self.output_dir_input.setText(config.output_directory)
 
         # Load ChatGPT model vào combo box
@@ -267,6 +284,7 @@ class SettingsTab(QWidget):
         # Validate
         chatgpt_key = self.chatgpt_key_input.text().strip()
         gemini_key = self.gemini_key_input.text().strip()
+        google_token = self.google_token_input.text().strip()
         output_dir = self.output_dir_input.text().strip()
         # Lấy model từ combo box (userData chứa model_id)
         chatgpt_model = self.chatgpt_model_combo.currentData() or "gpt-4o-mini"
@@ -298,6 +316,7 @@ class SettingsTab(QWidget):
         config_service.update(
             chatgpt_api_key=chatgpt_key,
             gemini_api_key=gemini_key,
+            google_bearer_token=google_token,
             output_directory=output_dir,
             chatgpt_model=chatgpt_model,
             gemini_model=gemini_model,

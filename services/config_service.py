@@ -15,6 +15,7 @@ class AppConfig:
     """Data class chứa cấu hình ứng dụng"""
     chatgpt_api_key: str = ""
     gemini_api_key: str = ""
+    google_bearer_token: str = ""
     output_directory: str = ""
 
     # Cấu hình ChatGPT
