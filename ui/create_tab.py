@@ -21,6 +21,7 @@ from services.config_service import config_service
 from services.chatgpt_service import chatgpt_service
 from services.chatgpt_web_service import chatgpt_web_service
 from services.gemini_service import gemini_service, ImageStatus
+from services.google_token_service import google_token_service
 from utils.prompt_parser import parse_prompts, ParsedPrompt
 from utils.image_downloader import ImageDownloader
 from ui.image_item import ImageItemWidget
@@ -143,11 +144,12 @@ class ImageGeneratorWorker(QObject):
 
     def _generate_with_gemini(self, prompt_obj: ParsedPrompt, i: int, total: int):
         """Tạo ảnh với Gemini API"""
+        self.log_message.emit(f"[{i+1}/{total}] Đang gọi Gemini API (có thể mất 1-2 phút)...")
         result = gemini_service.generate_image(
             prompt=prompt_obj.content,
             api_key=self._gemini_api_key,
-            max_retries=3,
-            retry_delay=2.0,
+            max_retries=5,      # Tăng số lần retry
+            retry_delay=5.0,    # Tăng thời gian chờ giữa các lần
             image_size=self._image_size
         )
 
@@ -938,6 +940,41 @@ class CreateTab(QWidget):
         """Lấy provider đã chọn từ dropdown"""
         return self.image_provider_combo.currentData() or "imagefx"
 
+    def _check_and_refresh_token(self) -> bool:
+        """
+        Kiểm tra và refresh Bearer Token nếu cần
+
+        Returns:
+            True nếu token hợp lệ hoặc đã refresh thành công
+            False nếu không thể lấy token
+        """
+        # Kiểm tra token có trong service không
+        if google_token_service.is_token_valid():
+            self._log("Token trong service còn hiệu lực")
+            return True
+
+        # Kiểm tra trình duyệt có đang mở không
+        if google_token_service.is_browser_open():
+            self._log("Đang refresh Bearer Token...")
+            result = google_token_service.refresh_token()
+
+            if result.success:
+                # Cập nhật token vào config
+                config_service.update(google_bearer_token=result.token)
+                config_service.save()
+                self._log("Đã refresh token thành công!")
+                return True
+            else:
+                self._log(f"Không thể refresh token: {result.error_message}")
+
+        # Kiểm tra token trong config
+        config = config_service.config
+        if config.google_bearer_token:
+            self._log("Sử dụng token từ config (có thể đã hết hạn)")
+            return True
+
+        return False
+
     def _start_image_generation(self):
         """Bắt đầu tạo ảnh trong background thread"""
         self.progress_bar.setVisible(True)
@@ -950,7 +987,11 @@ class CreateTab(QWidget):
         # Lấy provider đã chọn
         provider = self._get_selected_provider()
 
-        # Lấy config
+        # Nếu dùng ImageFX, kiểm tra và refresh token nếu cần
+        if provider == "imagefx":
+            self._check_and_refresh_token()
+
+        # Lấy config (sau khi có thể đã refresh token)
         config = config_service.config
         bearer_token = config.google_bearer_token
         gemini_api_key = config.gemini_api_key
@@ -1077,6 +1118,11 @@ class CreateTab(QWidget):
         self._log(f"Tạo lại ảnh #{index} với {provider_name}...")
         item_widget.set_status(ImageStatus.PROCESSING)
 
+        # Nếu dùng ImageFX, kiểm tra và refresh token nếu cần
+        if provider == "imagefx":
+            self._check_and_refresh_token()
+
+        # Lấy config (sau khi có thể đã refresh token)
         config = config_service.config
         image_size = self._get_image_size()
 
@@ -1108,11 +1154,12 @@ class CreateTab(QWidget):
                     self._log(f"Tạo lại ảnh #{index} thất bại: Không có dữ liệu ảnh")
             else:
                 # Tạo ảnh với Gemini
+                self._log(f"Đang gọi Gemini API (có thể mất 1-2 phút)...")
                 result = gemini_service.generate_image(
                     prompt=prompt_obj.content,
                     api_key=config.gemini_api_key,
-                    max_retries=3,
-                    retry_delay=2.0,
+                    max_retries=5,      # Tăng số lần retry
+                    retry_delay=5.0,    # Tăng thời gian chờ
                     image_size=image_size
                 )
 

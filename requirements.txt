@@ -14,8 +14,8 @@ openai>=1.0.0
 selenium>=4.15.0
 undetected-chromedriver>=3.5.0
 
-# Google Generative AI (Gemini)
-google-generativeai>=0.3.0
+# Google Generative AI (Gemini) - cần >=0.8.0 cho image generation
+google-generativeai>=0.8.0
 
 # Image processing
 Pillow>=10.0.0

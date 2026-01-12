@@ -8,11 +8,27 @@ from PySide6.QtWidgets import (
     QGroupBox, QMessageBox, QSpacerItem, QSizePolicy,
     QComboBox
 )
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import Qt, Signal, QThread, QObject
 
 from services.config_service import config_service
 from services.chatgpt_service import chatgpt_service
 from services.gemini_service import gemini_service
+from services.google_token_service import google_token_service
+
+
+class TokenWorker(QObject):
+    """Worker để lấy token trong background thread"""
+    finished = Signal(bool, str, str)  # success, token, error_message
+    status_update = Signal(str)
+
+    def run(self):
+        """Chạy trong background thread"""
+        google_token_service.set_status_callback(self._on_status)
+        result = google_token_service.open_and_get_token()
+        self.finished.emit(result.success, result.token, result.error_message)
+
+    def _on_status(self, message: str):
+        self.status_update.emit(message)
 
 
 class SettingsTab(QWidget):
@@ -97,6 +113,12 @@ class SettingsTab(QWidget):
 
         google_row = QHBoxLayout()
         google_row.addWidget(self.google_token_input)
+
+        self.auto_token_btn = QPushButton("Tự động lấy")
+        self.auto_token_btn.setFixedWidth(100)
+        self.auto_token_btn.setToolTip("Mở trình duyệt để tự động lấy Bearer Token từ Google Labs")
+        self.auto_token_btn.clicked.connect(self._auto_get_token)
+        google_row.addWidget(self.auto_token_btn)
 
         self.toggle_google_btn = QPushButton("Hiện")
         self.toggle_google_btn.setFixedWidth(60)
@@ -184,6 +206,7 @@ class SettingsTab(QWidget):
             # Gemini 2.0 (Mới nhất)
             ("gemini-2.0-flash-exp", "Gemini 2.0 Flash Exp - Tạo ảnh (Khuyến nghị)"),
             ("gemini-2.0-flash", "Gemini 2.0 Flash - Nhanh nhất"),
+            ("gemini-2.5-flash", "Gemini 2.5 Flash - Nhanh nhất"),
 
             # Gemini 1.5 Flash (Rate limit cao)
             ("gemini-1.5-flash", "Gemini 1.5 Flash - Rate limit cao"),
@@ -470,3 +493,78 @@ class SettingsTab(QWidget):
         finally:
             self.test_gemini_btn.setEnabled(True)
             self.test_gemini_btn.setText("Test")
+
+    def _auto_get_token(self):
+        """Tự động lấy Bearer Token từ Google Labs"""
+        reply = QMessageBox.information(
+            self,
+            "Tự động lấy Token",
+            "Trình duyệt sẽ mở trang Google Labs.\n\n"
+            "Hướng dẫn:\n"
+            "1. Đăng nhập Google nếu cần\n"
+            "2. Tạo 1 ảnh bất kỳ trên trang\n"
+            "3. Token sẽ được tự động lấy\n\n"
+            "Bấm OK để tiếp tục.",
+            QMessageBox.Ok | QMessageBox.Cancel
+        )
+
+        if reply != QMessageBox.Ok:
+            return
+
+        # Disable button
+        self.auto_token_btn.setEnabled(False)
+        self.auto_token_btn.setText("Đang lấy...")
+        self.status_label.setText("Đang mở trình duyệt...")
+        self.status_label.setStyleSheet("color: blue; font-style: italic;")
+
+        # Tạo thread để lấy token
+        self._token_thread = QThread()
+        self._token_worker = TokenWorker()
+        self._token_worker.moveToThread(self._token_thread)
+
+        # Connect signals
+        self._token_thread.started.connect(self._token_worker.run)
+        self._token_worker.finished.connect(self._on_token_result)
+        self._token_worker.status_update.connect(self._on_token_status)
+        self._token_worker.finished.connect(self._token_thread.quit)
+        self._token_worker.finished.connect(self._token_worker.deleteLater)
+        self._token_thread.finished.connect(self._token_thread.deleteLater)
+
+        # Start thread
+        self._token_thread.start()
+
+    def _on_token_status(self, message: str):
+        """Cập nhật trạng thái lấy token"""
+        self.status_label.setText(message)
+
+    def _on_token_result(self, success: bool, token: str, error_message: str):
+        """Xử lý kết quả lấy token"""
+        self.auto_token_btn.setEnabled(True)
+        self.auto_token_btn.setText("Tự động lấy")
+
+        if success:
+            # Cập nhật token vào input
+            self.google_token_input.setText(token)
+            self.status_label.setText("Đã lấy Bearer Token thành công!")
+            self.status_label.setStyleSheet("color: green; font-style: italic;")
+
+            QMessageBox.information(
+                self,
+                "Thành công",
+                "Đã lấy được Bearer Token!\n\n"
+                "Nhấn 'Lưu cài đặt' để lưu token.\n\n"
+                "Lưu ý: Token có hiệu lực khoảng 1 giờ."
+            )
+        else:
+            self.status_label.setText(f"Lỗi: {error_message}")
+            self.status_label.setStyleSheet("color: red; font-style: italic;")
+
+            QMessageBox.critical(
+                self,
+                "Lỗi",
+                f"Không thể lấy token:\n{error_message}"
+            )
+
+    def close_token_browser(self):
+        """Đóng trình duyệt lấy token (nếu đang mở)"""
+        google_token_service.close_browser()

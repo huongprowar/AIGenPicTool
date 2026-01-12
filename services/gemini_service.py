@@ -69,12 +69,13 @@ class GeminiImageService:
         genai.configure(api_key=api_key)
         self._configured = True
 
-    def _get_model(self, api_key: str):
+    def _get_model(self, api_key: str, for_image_generation: bool = False):
         """
         Lấy hoặc tạo Gemini model
 
         Args:
             api_key: Gemini API key
+            for_image_generation: True nếu dùng để tạo ảnh
 
         Returns:
             Gemini model instance
@@ -84,6 +85,27 @@ class GeminiImageService:
 
         # Lấy model từ config
         model_name = config_service.config.gemini_model or "gemini-2.0-flash-exp"
+
+        # Nếu dùng cho image generation, tạo model mới với response_modalities
+        if for_image_generation:
+            try:
+                # Thử tạo với response_modalities (phiên bản mới)
+                return genai.GenerativeModel(
+                    model_name=model_name,
+                    generation_config=genai.GenerationConfig(
+                        temperature=1.0,
+                        response_modalities=["Text", "Image"],
+                    )
+                )
+            except TypeError:
+                # Fallback cho phiên bản cũ - không hỗ trợ response_modalities
+                self._log_status("Cảnh báo: Phiên bản thư viện không hỗ trợ image generation trực tiếp")
+                return genai.GenerativeModel(
+                    model_name=model_name,
+                    generation_config=genai.GenerationConfig(
+                        temperature=1.0,
+                    )
+                )
 
         if self._model is None or self._current_model_name != model_name:
             # Sử dụng model từ config
@@ -165,7 +187,8 @@ class GeminiImageService:
             try:
                 self._log_status(f"Đang tạo ảnh (lần {attempt + 1}/{max_retries})...")
 
-                model = self._get_model(api_key)
+                # Tạo model với response_modalities cho image generation
+                model = self._get_model(api_key, for_image_generation=True)
 
                 # Xác định aspect ratio từ kích thước
                 width, height = image_size
@@ -188,19 +211,22 @@ Image specifications:
 
 Please create a high-quality, detailed image that matches this description and specifications."""
 
-                # Gọi API với response_modalities để yêu cầu image
+                # Gọi API với timeout dài hơn cho image generation
+                # request_options để set timeout (120 giây)
                 response = model.generate_content(
                     generation_prompt,
-                    generation_config=GenerationConfig(
-                        temperature=1.0,
-                        response_modalities=["TEXT", "IMAGE"],
-                    )
+                    request_options={"timeout": 120}
                 )
+
+                # Log response để debug
+                self._log_status(f"Nhận response từ Gemini...")
 
                 # Xử lý response
                 if response.candidates:
+                    self._log_status(f"Có {len(response.candidates)} candidates")
                     for candidate in response.candidates:
                         if candidate.content and candidate.content.parts:
+                            self._log_status(f"Candidate có {len(candidate.content.parts)} parts")
                             for part in candidate.content.parts:
                                 # Kiểm tra nếu part có inline_data (image)
                                 if hasattr(part, 'inline_data') and part.inline_data:
@@ -216,6 +242,11 @@ Please create a high-quality, detailed image that matches this description and s
                                         mime_type=mime_type,
                                         status=ImageStatus.SUCCESS
                                     )
+                                # Log nếu part là text
+                                elif hasattr(part, 'text') and part.text:
+                                    self._log_status(f"Response text: {part.text[:200]}...")
+                else:
+                    self._log_status("Response không có candidates")
 
                 # Không tìm thấy image trong response
                 self._log_status("Response không chứa ảnh, thử lại...")
