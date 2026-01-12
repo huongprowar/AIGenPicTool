@@ -180,7 +180,6 @@ class SettingsTab(QWidget):
         self.gemini_model_combo.setMinimumWidth(300)
 
         # Danh sách các model Gemini (model_id, display_name)
-        # Lưu ý: Chỉ gemini-2.0-flash-exp hỗ trợ image generation
         self.GEMINI_MODELS = [
             # Gemini 2.0 (Mới nhất)
             ("gemini-2.0-flash-exp", "Gemini 2.0 Flash Exp - Tạo ảnh (Khuyến nghị)"),
@@ -194,10 +193,18 @@ class SettingsTab(QWidget):
             # Gemini 1.5 Pro (Chất lượng cao)
             ("gemini-1.5-pro", "Gemini 1.5 Pro - Chất lượng cao"),
             ("gemini-1.5-pro-latest", "Gemini 1.5 Pro Latest"),
+            ("gemini-1.5-pro-latest", "Gemini 1.5 Pro Latest"),
 
             # Experimental
-            ("gemini-exp-1206", "Gemini Exp 1206 - Thử nghiệm"),
+            ("gemma-3-1b-it", "gemma-3-1b-it"),
+            ("gemma-3-4b-it", "gemma-3-4b-it"),
+            ("gemma-3-12b-it", "gemma-3-12b-it"),
+            ("gemma-3-27b-it", "gemma-3-27b-it"),
+            ("gemma-3n-e2b-it", "gemma-3n-e2b-it"),
+            ("gemma-3n-e4b-it", "gemma-3n-e4b-it"),
+
         ]
+        # Lưu ý: Chỉ gemini-2.0-flash-exp hỗ trợ image generation
 
         for model_id, display_name in self.GEMINI_MODELS:
             self.gemini_model_combo.addItem(display_name, model_id)
