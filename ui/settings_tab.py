@@ -13,7 +13,7 @@ from PySide6.QtCore import Qt, Signal, QThread, QObject
 from services.config_service import config_service
 from services.chatgpt_service import chatgpt_service
 from services.gemini_service import gemini_service
-from services.google_token_service import google_token_service, BrowserType
+from services.google_token_service import google_token_service
 
 
 class TokenWorker(QObject):
@@ -21,14 +21,10 @@ class TokenWorker(QObject):
     finished = Signal(bool, str, str)  # success, token, error_message
     status_update = Signal(str)
 
-    def __init__(self, browser_type: BrowserType = None):
-        super().__init__()
-        self._browser_type = browser_type
-
     def run(self):
-        """Chạy trong background thread"""
+        """Chạy trong background thread - tự động dùng browser mặc định"""
         google_token_service.set_status_callback(self._on_status)
-        result = google_token_service.open_and_get_token(self._browser_type)
+        result = google_token_service.open_and_get_token()
         self.finished.emit(result.success, result.token, result.error_message)
 
     def _on_status(self, message: str):
@@ -113,22 +109,14 @@ class SettingsTab(QWidget):
         self.google_token_input = QLineEdit()
         self.google_token_input.setPlaceholderText("Nhập Google Bearer Token cho Google Flow API")
         self.google_token_input.setEchoMode(QLineEdit.Password)
-        self.google_token_input.setMinimumWidth(300)
+        self.google_token_input.setMinimumWidth(400)
 
         google_row = QHBoxLayout()
         google_row.addWidget(self.google_token_input)
 
-        # Browser selection dropdown
-        self.browser_combo = QComboBox()
-        self.browser_combo.setFixedWidth(180)
-        self.browser_combo.setToolTip("Chọn trình duyệt để lấy token")
-        for browser_type, display_name in google_token_service.SUPPORTED_BROWSERS:
-            self.browser_combo.addItem(display_name, browser_type)
-        google_row.addWidget(self.browser_combo)
-
         self.auto_token_btn = QPushButton("Tự động lấy")
         self.auto_token_btn.setFixedWidth(100)
-        self.auto_token_btn.setToolTip("Mở trình duyệt để tự động lấy Bearer Token từ Google Labs")
+        self.auto_token_btn.setToolTip("Mở trình duyệt mặc định để tự động lấy Bearer Token từ Google Labs")
         self.auto_token_btn.clicked.connect(self._auto_get_token)
         google_row.addWidget(self.auto_token_btn)
 
@@ -507,15 +495,11 @@ class SettingsTab(QWidget):
             self.test_gemini_btn.setText("Test")
 
     def _auto_get_token(self):
-        """Tự động lấy Bearer Token từ Google Labs"""
-        # Lấy browser đã chọn
-        selected_browser = self.browser_combo.currentData()
-        browser_name = self.browser_combo.currentText()
-
+        """Tự động lấy Bearer Token từ Google Labs bằng trình duyệt mặc định"""
         reply = QMessageBox.information(
             self,
             "Tự động lấy Token",
-            f"Trình duyệt {browser_name} sẽ mở trang Google Labs.\n\n"
+            "Trình duyệt mặc định sẽ mở trang Google Labs.\n\n"
             "Hướng dẫn:\n"
             "1. Đăng nhập Google nếu cần\n"
             "2. Tạo 1 ảnh bất kỳ trên trang\n"
@@ -529,14 +513,13 @@ class SettingsTab(QWidget):
 
         # Disable controls
         self.auto_token_btn.setEnabled(False)
-        self.browser_combo.setEnabled(False)
         self.auto_token_btn.setText("Đang lấy...")
-        self.status_label.setText(f"Đang mở {browser_name}...")
+        self.status_label.setText("Đang mở trình duyệt...")
         self.status_label.setStyleSheet("color: blue; font-style: italic;")
 
-        # Tạo thread để lấy token với browser đã chọn
+        # Tạo thread để lấy token (tự động dùng browser mặc định)
         self._token_thread = QThread()
-        self._token_worker = TokenWorker(browser_type=selected_browser)
+        self._token_worker = TokenWorker()
         self._token_worker.moveToThread(self._token_thread)
 
         # Connect signals
@@ -557,7 +540,6 @@ class SettingsTab(QWidget):
     def _on_token_result(self, success: bool, token: str, error_message: str):
         """Xử lý kết quả lấy token"""
         self.auto_token_btn.setEnabled(True)
-        self.browser_combo.setEnabled(True)
         self.auto_token_btn.setText("Tự động lấy")
 
         if success:

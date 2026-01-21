@@ -2,14 +2,11 @@
 Google Token Service - Tự động lấy Bearer Token từ Google Labs
 """
 
-import os
 import time
 import json
 import threading
-from typing import Optional, Callable, Literal
+from typing import Optional, Callable
 from dataclasses import dataclass
-from enum import Enum
-from pathlib import Path
 
 try:
     import undetected_chromedriver as uc
@@ -26,14 +23,9 @@ from selenium.webdriver.firefox.options import Options as FirefoxOptions
 from selenium.webdriver.edge.options import Options as EdgeOptions
 from selenium.common.exceptions import TimeoutException
 
-
-class BrowserType(Enum):
-    """Các loại trình duyệt được hỗ trợ"""
-    CHROME = "chrome"
-    CHROME_UNDETECTED = "chrome_undetected"
-    FIREFOX = "firefox"
-    EDGE = "edge"
-    COCCOC = "coccoc"
+from utils.browser_utils import (
+    BrowserType, get_default_browser, find_coccoc_path, get_browser_display_name
+)
 
 
 @dataclass
@@ -54,29 +46,14 @@ class GoogleTokenService:
 
     GOOGLE_LABS_URL = "https://labs.google/fx/tools/image-fx"
 
-    # Danh sách trình duyệt hỗ trợ để hiển thị trong UI
-    SUPPORTED_BROWSERS = [
-        (BrowserType.CHROME_UNDETECTED, "Chrome (Undetected) - Khuyến nghị"),
-        (BrowserType.CHROME, "Chrome"),
-        (BrowserType.COCCOC, "Cốc Cốc"),
-        (BrowserType.EDGE, "Microsoft Edge"),
-        (BrowserType.FIREFOX, "Firefox"),
-    ]
-
-    # Đường dẫn mặc định của Cốc Cốc trên Windows
-    COCCOC_PATHS = [
-        r"C:\Program Files\CocCoc\Browser\Application\browser.exe",
-        r"C:\Program Files (x86)\CocCoc\Browser\Application\browser.exe",
-        r"C:\Users\{username}\AppData\Local\CocCoc\Browser\Application\browser.exe",
-    ]
-
     def __init__(self):
-        self._driver = None  # Có thể là Chrome, Firefox, hoặc Edge
+        self._driver = None
         self._status_callback: Optional[Callable[[str], None]] = None
         self._current_token: str = ""
         self._token_timestamp: float = 0
         self._lock = threading.Lock()
-        self._current_browser: BrowserType = BrowserType.CHROME_UNDETECTED
+        self._current_browser: BrowserType = BrowserType.CHROME
+        self._browser_name: str = "Chrome"
 
     def set_status_callback(self, callback: Callable[[str], None]) -> None:
         """Set callback để cập nhật trạng thái"""
@@ -87,6 +64,17 @@ class GoogleTokenService:
         print(f"[GoogleToken] {message}")
         if self._status_callback:
             self._status_callback(message)
+
+    def _detect_default_browser(self) -> None:
+        """Phát hiện và lưu trình duyệt mặc định"""
+        browser_type, browser_name = get_default_browser()
+        self._current_browser = browser_type
+        self._browser_name = browser_name
+        self._log_status(f"Phát hiện trình duyệt mặc định: {browser_name}")
+
+    def get_browser_name(self) -> str:
+        """Lấy tên trình duyệt hiện tại"""
+        return self._browser_name
 
     def _create_chrome_driver(self, use_undetected: bool = True):
         """Tạo Chrome driver"""
@@ -124,67 +112,60 @@ class GoogleTokenService:
         options.set_capability('ms:loggingPrefs', {'performance': 'ALL'})
         return webdriver.Edge(options=options)
 
-    def _find_coccoc_path(self) -> Optional[str]:
-        """Tìm đường dẫn cài đặt Cốc Cốc"""
-        username = os.getenv('USERNAME') or os.getenv('USER') or 'User'
-
-        for path_template in self.COCCOC_PATHS:
-            path = path_template.replace('{username}', username)
-            if Path(path).exists():
-                return path
-
-        return None
-
     def _create_coccoc_driver(self):
         """Tạo Cốc Cốc driver (dựa trên Chromium)"""
         self._log_status("Đang khởi tạo trình duyệt Cốc Cốc...")
 
-        # Tìm đường dẫn Cốc Cốc
-        coccoc_path = self._find_coccoc_path()
+        coccoc_path = find_coccoc_path()
 
         if not coccoc_path:
             raise Exception(
                 "Không tìm thấy Cốc Cốc!\n"
-                "Vui lòng cài đặt Cốc Cốc hoặc chọn trình duyệt khác."
+                "Sẽ sử dụng Chrome thay thế."
             )
 
         self._log_status(f"Tìm thấy Cốc Cốc tại: {coccoc_path}")
 
-        # Cốc Cốc dựa trên Chromium nên dùng ChromeOptions
         options = ChromeOptions()
         options.binary_location = coccoc_path
         options.add_argument("--start-maximized")
         options.add_experimental_option("excludeSwitches", ["enable-automation"])
         options.set_capability('goog:loggingPrefs', {'performance': 'ALL'})
 
-        # Sử dụng ChromeDriver (tương thích với Cốc Cốc)
         return webdriver.Chrome(options=options)
 
-    def _create_driver(self, browser_type: BrowserType = None):
-        """Tạo driver dựa trên loại trình duyệt được chọn"""
-        if browser_type is None:
-            browser_type = self._current_browser
+    def _create_driver(self):
+        """Tạo driver dựa trên trình duyệt mặc định của hệ thống"""
+        # Phát hiện trình duyệt mặc định
+        self._detect_default_browser()
 
-        self._current_browser = browser_type
+        browser_type = self._current_browser
 
-        if browser_type == BrowserType.CHROME_UNDETECTED:
-            return self._create_chrome_driver(use_undetected=True)
-        elif browser_type == BrowserType.CHROME:
-            return self._create_chrome_driver(use_undetected=False)
-        elif browser_type == BrowserType.FIREFOX:
-            return self._create_firefox_driver()
-        elif browser_type == BrowserType.EDGE:
-            return self._create_edge_driver()
-        elif browser_type == BrowserType.COCCOC:
-            return self._create_coccoc_driver()
-        else:
-            # Default to Chrome
+        try:
+            if browser_type == BrowserType.CHROME_UNDETECTED:
+                return self._create_chrome_driver(use_undetected=True)
+            elif browser_type == BrowserType.CHROME:
+                if HAS_UNDETECTED:
+                    return self._create_chrome_driver(use_undetected=True)
+                return self._create_chrome_driver(use_undetected=False)
+            elif browser_type == BrowserType.FIREFOX:
+                return self._create_firefox_driver()
+            elif browser_type == BrowserType.EDGE:
+                return self._create_edge_driver()
+            elif browser_type == BrowserType.COCCOC:
+                return self._create_coccoc_driver()
+            else:
+                self._log_status(f"Browser không hỗ trợ ({browser_type}), sử dụng Chrome")
+                return self._create_chrome_driver(use_undetected=HAS_UNDETECTED)
+        except Exception as e:
+            self._log_status(f"Lỗi tạo {self._browser_name}: {e}")
+            self._log_status("Thử fallback sang Chrome...")
             return self._create_chrome_driver(use_undetected=HAS_UNDETECTED)
 
-    def _get_driver(self, browser_type: BrowserType = None):
+    def _get_driver(self):
         """Lấy hoặc tạo driver"""
         if self._driver is None:
-            self._driver = self._create_driver(browser_type)
+            self._driver = self._create_driver()
         return self._driver
 
     def _extract_token_from_logs(self, driver) -> Optional[str]:
@@ -268,30 +249,18 @@ class GoogleTokenService:
             self._log_status(f"Lỗi khi đọc Firefox storage: {e}")
         return None
 
-    def open_and_get_token(self, browser_type: BrowserType = None) -> TokenResult:
+    def open_and_get_token(self) -> TokenResult:
         """
-        Mở Google Labs và lấy Bearer Token
-
-        Args:
-            browser_type: Loại trình duyệt sử dụng (mặc định: Chrome Undetected)
+        Mở Google Labs bằng trình duyệt mặc định và lấy Bearer Token
 
         Returns:
             TokenResult với token nếu thành công
         """
         try:
             with self._lock:
-                # Đóng driver cũ nếu đang mở với browser khác
-                if self._driver is not None and browser_type is not None and browser_type != self._current_browser:
-                    self._log_status("Đóng trình duyệt cũ...")
-                    try:
-                        self._driver.quit()
-                    except:
-                        pass
-                    self._driver = None
+                driver = self._get_driver()
 
-                driver = self._get_driver(browser_type)
-
-                self._log_status("Đang mở Google Labs ImageFX...")
+                self._log_status(f"Đang mở Google Labs ImageFX bằng {self._browser_name}...")
                 driver.get(self.GOOGLE_LABS_URL)
 
                 self._log_status("Vui lòng đăng nhập Google nếu cần...")

@@ -613,8 +613,8 @@ class CreateTab(QWidget):
         self.placeholder.setVisible(True)
 
     def _on_open_browser_clicked(self):
-        """Handler mở trình duyệt ChatGPT"""
-        self._log("Đang mở trình duyệt Chrome...")
+        """Handler mở trình duyệt ChatGPT (tự động dùng browser mặc định)"""
+        self._log("Đang mở trình duyệt mặc định...")
         self.open_browser_btn.setEnabled(False)
         self.browser_status_label.setText("Trình duyệt: Đang mở...")
         self.browser_status_label.setStyleSheet("color: #FF9800; font-size: 11px;")
@@ -624,9 +624,10 @@ class CreateTab(QWidget):
         import threading
         def open_browser():
             result = chatgpt_web_service.open_browser_and_wait_login()
+            browser_name = chatgpt_web_service.get_browser_name()
             # Update UI in main thread
             if result.success:
-                self.browser_status_label.setText("Trình duyệt: Đã sẵn sàng")
+                self.browser_status_label.setText(f"{browser_name}: Đã sẵn sàng")
                 self.browser_status_label.setStyleSheet("color: #4CAF50; font-size: 11px; font-weight: bold;")
             else:
                 self.browser_status_label.setText(f"Lỗi: {result.error_message[:30]}...")

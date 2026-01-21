@@ -20,8 +20,14 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
-from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.chrome.options import Options as ChromeOptions
+from selenium.webdriver.firefox.options import Options as FirefoxOptions
+from selenium.webdriver.edge.options import Options as EdgeOptions
 from selenium.common.exceptions import TimeoutException, NoSuchElementException
+
+from utils.browser_utils import (
+    BrowserType, get_default_browser, find_coccoc_path, get_browser_display_name
+)
 
 
 class ChatGPTWebError(Exception):
@@ -50,7 +56,7 @@ class ChatGPTWebResponse:
 class ChatGPTWebService:
     """
     Service tương tác với ChatGPT qua trình duyệt web
-    - Mở trình duyệt Chrome
+    - Mở trình duyệt Chrome/Firefox/Edge/Cốc Cốc
     - Điều hướng đến ChatGPT
     - Gửi prompt và lấy response
     """
@@ -75,14 +81,24 @@ class ChatGPTWebService:
         # Login check
         "login_button": "button[data-testid='login-button']",
         "chat_input_form": "form",
+
+        # Indicators khi ChatGPT đang trả lời
+        "stop_button": "button[data-testid='stop-button']",
+        "stop_button_alt": "button[aria-label='Stop generating']",
+        "streaming_indicator": "[class*='result-streaming']",
+        "streaming_indicator_alt": "[class*='streaming']",
+        "typing_indicator": "[class*='typing']",
+        "thinking_indicator": "[class*='thinking']",
     }
 
     def __init__(self):
         """Khởi tạo service"""
-        self._driver: Optional[webdriver.Chrome] = None
+        self._driver = None
         self._status_callback: Optional[Callable[[str], None]] = None
         self._is_logged_in: bool = False
         self._lock = threading.Lock()
+        self._current_browser: BrowserType = BrowserType.CHROME
+        self._browser_name: str = "Chrome"
 
     def set_status_callback(self, callback: Callable[[str], None]) -> None:
         """Set callback để cập nhật trạng thái"""
@@ -94,20 +110,28 @@ class ChatGPTWebService:
         if self._status_callback:
             self._status_callback(message)
 
-    def _create_driver(self) -> webdriver.Chrome:
+    def _detect_default_browser(self) -> None:
+        """Phát hiện và lưu trình duyệt mặc định"""
+        browser_type, browser_name = get_default_browser()
+        self._current_browser = browser_type
+        self._browser_name = browser_name
+        self._log_status(f"Phát hiện trình duyệt mặc định: {browser_name}")
+
+    def get_browser_name(self) -> str:
+        """Lấy tên trình duyệt hiện tại"""
+        return self._browser_name
+
+    def _create_chrome_driver(self, use_undetected: bool = True):
         """Tạo Chrome driver"""
         self._log_status("Đang khởi tạo trình duyệt Chrome...")
 
-        if HAS_UNDETECTED:
-            # Sử dụng undetected-chromedriver để tránh bị phát hiện
+        if use_undetected and HAS_UNDETECTED:
             options = uc.ChromeOptions()
             options.add_argument("--start-maximized")
             options.add_argument("--disable-blink-features=AutomationControlled")
-
-            driver = uc.Chrome(options=options)
+            return uc.Chrome(options=options)
         else:
-            # Fallback to regular selenium
-            options = Options()
+            options = ChromeOptions()
             options.add_argument("--start-maximized")
             options.add_argument("--disable-blink-features=AutomationControlled")
             options.add_experimental_option("excludeSwitches", ["enable-automation"])
@@ -116,17 +140,88 @@ class ChatGPTWebService:
             driver = webdriver.Chrome(options=options)
 
             # Thêm script để ẩn automation
-            driver.execute_cdp_cmd('Page.addScriptToEvaluateOnNewDocument', {
-                'source': '''
-                    Object.defineProperty(navigator, 'webdriver', {
-                        get: () => undefined
-                    })
-                '''
-            })
+            try:
+                driver.execute_cdp_cmd('Page.addScriptToEvaluateOnNewDocument', {
+                    'source': '''
+                        Object.defineProperty(navigator, 'webdriver', {
+                            get: () => undefined
+                        })
+                    '''
+                })
+            except:
+                pass
 
-        return driver
+            return driver
 
-    def _get_driver(self) -> webdriver.Chrome:
+    def _create_firefox_driver(self):
+        """Tạo Firefox driver"""
+        self._log_status("Đang khởi tạo trình duyệt Firefox...")
+
+        options = FirefoxOptions()
+        options.add_argument("--start-maximized")
+        return webdriver.Firefox(options=options)
+
+    def _create_edge_driver(self):
+        """Tạo Edge driver"""
+        self._log_status("Đang khởi tạo trình duyệt Edge...")
+
+        options = EdgeOptions()
+        options.add_argument("--start-maximized")
+        options.add_experimental_option("excludeSwitches", ["enable-automation"])
+        return webdriver.Edge(options=options)
+
+    def _create_coccoc_driver(self):
+        """Tạo Cốc Cốc driver"""
+        self._log_status("Đang khởi tạo trình duyệt Cốc Cốc...")
+
+        coccoc_path = find_coccoc_path()
+
+        if not coccoc_path:
+            raise ChatGPTWebError(
+                "Không tìm thấy Cốc Cốc!\n"
+                "Sẽ sử dụng Chrome thay thế."
+            )
+
+        self._log_status(f"Tìm thấy Cốc Cốc tại: {coccoc_path}")
+
+        options = ChromeOptions()
+        options.binary_location = coccoc_path
+        options.add_argument("--start-maximized")
+        options.add_experimental_option("excludeSwitches", ["enable-automation"])
+
+        return webdriver.Chrome(options=options)
+
+    def _create_driver(self):
+        """Tạo driver dựa trên trình duyệt mặc định của hệ thống"""
+        # Phát hiện trình duyệt mặc định
+        self._detect_default_browser()
+
+        browser_type = self._current_browser
+
+        try:
+            if browser_type == BrowserType.CHROME_UNDETECTED:
+                return self._create_chrome_driver(use_undetected=True)
+            elif browser_type == BrowserType.CHROME:
+                # Thử dùng undetected trước nếu có
+                if HAS_UNDETECTED:
+                    return self._create_chrome_driver(use_undetected=True)
+                return self._create_chrome_driver(use_undetected=False)
+            elif browser_type == BrowserType.FIREFOX:
+                return self._create_firefox_driver()
+            elif browser_type == BrowserType.EDGE:
+                return self._create_edge_driver()
+            elif browser_type == BrowserType.COCCOC:
+                return self._create_coccoc_driver()
+            else:
+                # Fallback to Chrome
+                self._log_status(f"Browser không hỗ trợ ({browser_type}), sử dụng Chrome")
+                return self._create_chrome_driver(use_undetected=HAS_UNDETECTED)
+        except Exception as e:
+            self._log_status(f"Lỗi tạo {self._browser_name}: {e}")
+            self._log_status("Thử fallback sang Chrome...")
+            return self._create_chrome_driver(use_undetected=HAS_UNDETECTED)
+
+    def _get_driver(self):
         """Lấy hoặc tạo driver"""
         if self._driver is None:
             self._driver = self._create_driver()
@@ -144,7 +239,53 @@ class ChatGPTWebService:
                 continue
         return None
 
-    def _wait_for_response_complete(self, driver, timeout: int = 120) -> str:
+    def _is_chatgpt_still_generating(self, driver) -> bool:
+        """
+        Kiểm tra ChatGPT có đang generate response không
+
+        Returns:
+            True nếu đang generate, False nếu đã xong
+        """
+        # Kiểm tra nút Stop có hiển thị không
+        stop_selectors = [
+            self.SELECTORS["stop_button"],
+            self.SELECTORS["stop_button_alt"],
+            "button[aria-label*='Stop']",
+            "button[aria-label*='stop']",
+        ]
+
+        for selector in stop_selectors:
+            try:
+                stop_buttons = driver.find_elements(By.CSS_SELECTOR, selector)
+                for btn in stop_buttons:
+                    if btn.is_displayed():
+                        return True
+            except:
+                pass
+
+        # Kiểm tra các streaming/typing indicators
+        streaming_selectors = [
+            self.SELECTORS["streaming_indicator"],
+            self.SELECTORS["streaming_indicator_alt"],
+            self.SELECTORS["typing_indicator"],
+            self.SELECTORS["thinking_indicator"],
+            "[class*='animate-pulse']",
+            "[class*='cursor-blink']",
+            "span.cursor",
+        ]
+
+        for selector in streaming_selectors:
+            try:
+                indicators = driver.find_elements(By.CSS_SELECTOR, selector)
+                for ind in indicators:
+                    if ind.is_displayed():
+                        return True
+            except:
+                pass
+
+        return False
+
+    def _wait_for_response_complete(self, driver, timeout: int = 180) -> str:
         """
         Đợi ChatGPT trả lời xong và lấy nội dung
 
@@ -160,9 +301,16 @@ class ChatGPTWebService:
         start_time = time.time()
         last_response = ""
         stable_count = 0
+        required_stable_checks = 6  # 6 lần * 1s = 6 giây ổn định
+
+        # Đợi một chút để ChatGPT bắt đầu generate
+        time.sleep(2)
 
         while time.time() - start_time < timeout:
             try:
+                # Kiểm tra ChatGPT có đang generate không
+                is_generating = self._is_chatgpt_still_generating(driver)
+
                 # Tìm tất cả response từ assistant
                 responses = driver.find_elements(By.CSS_SELECTOR, self.SELECTORS["response_container"])
 
@@ -180,33 +328,36 @@ class ChatGPTWebService:
                     except:
                         current_response = last_response_element.text
 
-                    # Kiểm tra xem response đã ổn định chưa (không thay đổi trong 2 giây)
-                    if current_response == last_response and current_response.strip():
-                        stable_count += 1
-                        if stable_count >= 4:  # 4 lần check * 0.5s = 2 giây ổn định
-                            self._log_status("ChatGPT đã trả lời xong!")
-                            return current_response
+                    # Log tiến trình
+                    response_len = len(current_response)
+                    elapsed = int(time.time() - start_time)
+                    if elapsed % 5 == 0:  # Log mỗi 5 giây
+                        status = "đang tạo..." if is_generating else "kiểm tra..."
+                        self._log_status(f"ChatGPT {status} ({response_len} ký tự, {elapsed}s)")
+
+                    # Nếu không còn generating VÀ response ổn định
+                    if not is_generating:
+                        if current_response == last_response and current_response.strip():
+                            stable_count += 1
+                            if stable_count >= required_stable_checks:
+                                self._log_status(f"ChatGPT đã trả lời xong! ({len(current_response)} ký tự)")
+                                return current_response
+                        else:
+                            stable_count = 0
+                            last_response = current_response
                     else:
+                        # Đang generate, reset stable count
                         stable_count = 0
                         last_response = current_response
-
-                # Kiểm tra xem có đang loading không
-                loading_indicators = driver.find_elements(By.CSS_SELECTOR, "[class*='result-streaming']")
-                if not loading_indicators and last_response.strip():
-                    time.sleep(1)  # Chờ thêm một chút
-                    # Double check
-                    loading_indicators = driver.find_elements(By.CSS_SELECTOR, "[class*='result-streaming']")
-                    if not loading_indicators:
-                        return last_response
 
             except Exception as e:
                 self._log_status(f"Lỗi khi đọc response: {e}")
 
-            time.sleep(0.5)
+            time.sleep(1)
 
         # Timeout - trả về response hiện tại nếu có
         if last_response.strip():
-            self._log_status("Timeout nhưng đã có response, sử dụng response hiện tại")
+            self._log_status(f"Timeout ({timeout}s) nhưng đã có response, sử dụng response hiện tại ({len(last_response)} ký tự)")
             return last_response
 
         raise TimeoutException("Không nhận được response từ ChatGPT")
@@ -278,7 +429,7 @@ class ChatGPTWebService:
 
     def open_browser_and_wait_login(self) -> ChatGPTWebResponse:
         """
-        Mở trình duyệt và chờ user đăng nhập
+        Mở trình duyệt mặc định và chờ user đăng nhập
 
         Returns:
             ChatGPTWebResponse
@@ -287,7 +438,7 @@ class ChatGPTWebService:
             with self._lock:
                 driver = self._get_driver()
 
-                self._log_status("Đang mở ChatGPT...")
+                self._log_status(f"Đang mở ChatGPT bằng {self._browser_name}...")
                 driver.get(self.CHATGPT_URL)
 
                 self._log_status("Vui lòng đăng nhập vào ChatGPT nếu cần...")
