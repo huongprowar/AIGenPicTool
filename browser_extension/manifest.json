@@ -1,0 +1,35 @@
+{
+  "manifest_version": 3,
+  "name": "Google Token Grabber",
+  "version": "1.0",
+  "description": "Tự động lấy Bearer Token từ Google Labs ImageFX",
+  "permissions": [
+    "webRequest",
+    "storage",
+    "clipboardWrite",
+    "notifications",
+    "downloads"
+  ],
+  "host_permissions": [
+    "https://labs.google/*",
+    "https://aisandbox-pa.googleapis.com/*",
+    "https://*.google.com/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_popup": "popup.html",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    },
+    "default_title": "Google Token Grabber"
+  },
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  }
+}

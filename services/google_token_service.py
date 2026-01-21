@@ -1,10 +1,18 @@
 """
 Google Token Service - Tự động lấy Bearer Token từ Google Labs
+
+Cách sử dụng (tránh lỗi "unsupported browser"):
+1. Gọi launch_browser_for_login() - mở browser bình thường (không qua Selenium)
+2. Đăng nhập Google trong browser đó
+3. Gọi get_token_from_browser() - kết nối vào browser và lấy token
 """
 
+import os
 import time
 import json
 import threading
+import subprocess
+import socket
 from typing import Optional, Callable
 from dataclasses import dataclass
 
@@ -26,6 +34,9 @@ from selenium.common.exceptions import TimeoutException
 from utils.browser_utils import (
     BrowserType, get_default_browser, find_coccoc_path, get_browser_display_name
 )
+
+# Port mặc định cho Remote Debugging
+DEFAULT_DEBUG_PORT = 9222
 
 
 @dataclass
@@ -54,6 +65,8 @@ class GoogleTokenService:
         self._lock = threading.Lock()
         self._current_browser: BrowserType = BrowserType.CHROME
         self._browser_name: str = "Chrome"
+        self._debug_port: int = DEFAULT_DEBUG_PORT
+        self._is_attached: bool = False  # True nếu đang kết nối vào browser có sẵn
 
     def set_status_callback(self, callback: Callable[[str], None]) -> None:
         """Set callback để cập nhật trạng thái"""
@@ -64,6 +77,332 @@ class GoogleTokenService:
         print(f"[GoogleToken] {message}")
         if self._status_callback:
             self._status_callback(message)
+
+    # ==================== ĐỌC TOKEN TỪ EXTENSION ====================
+
+    def _get_token_file_path(self) -> str:
+        """Lấy đường dẫn file token từ extension"""
+        username = os.getenv('USERNAME') or os.getenv('USER') or 'User'
+        # File được extension download vào thư mục Downloads
+        return rf"C:\Users\{username}\Downloads\google_token.json"
+
+    def get_token_from_extension(self) -> TokenResult:
+        """
+        Đọc token từ file mà extension đã lưu.
+        Đây là cách đơn giản nhất - chỉ cần cài extension và dùng Google Labs bình thường.
+
+        Returns:
+            TokenResult với token nếu thành công
+        """
+        token_file = self._get_token_file_path()
+
+        if not os.path.exists(token_file):
+            return TokenResult(
+                success=False,
+                error_message=(
+                    f"Không tìm thấy file token!\n"
+                    f"Hãy cài Extension và truy cập Google Labs ImageFX để lấy token.\n"
+                    f"File cần có: {token_file}"
+                )
+            )
+
+        try:
+            with open(token_file, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+
+            token = data.get('token', '')
+            timestamp = data.get('timestamp', 0)
+
+            if not token:
+                return TokenResult(
+                    success=False,
+                    error_message="File token rỗng. Hãy tạo 1 ảnh trên Google Labs ImageFX."
+                )
+
+            # Kiểm tra token còn hạn không (50 phút)
+            age_minutes = (time.time() * 1000 - timestamp) / 60000
+            if age_minutes > 50:
+                self._log_status(f"Token có thể đã hết hạn ({int(age_minutes)} phút trước)")
+
+            self._current_token = token
+            self._token_timestamp = timestamp / 1000  # Convert ms to seconds
+
+            self._log_status("Đã đọc token từ extension thành công!")
+            return TokenResult(success=True, token=token)
+
+        except json.JSONDecodeError:
+            return TokenResult(
+                success=False,
+                error_message="File token bị lỗi format. Hãy tạo lại."
+            )
+        except Exception as e:
+            return TokenResult(
+                success=False,
+                error_message=f"Lỗi đọc file token: {e}"
+            )
+
+    def is_extension_token_available(self) -> bool:
+        """Kiểm tra có token từ extension không"""
+        token_file = self._get_token_file_path()
+        if not os.path.exists(token_file):
+            return False
+
+        try:
+            with open(token_file, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+            return bool(data.get('token'))
+        except:
+            return False
+
+    # ==================== PHƯƠNG THỨC CŨ - DÙNG SELENIUM ====================
+
+    def _is_debug_port_open(self) -> bool:
+        """Kiểm tra port debugging có đang mở không"""
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                s.settimeout(1)
+                result = s.connect_ex(('127.0.0.1', self._debug_port))
+                return result == 0
+        except:
+            return False
+
+    def _is_browser_running(self) -> bool:
+        """Kiểm tra xem có browser nào đang chạy không"""
+        try:
+            import psutil
+            browser_names = ['chrome.exe', 'msedge.exe', 'browser.exe', 'firefox.exe']
+            for proc in psutil.process_iter(['name']):
+                if proc.info['name'] and proc.info['name'].lower() in browser_names:
+                    return True
+        except:
+            pass
+        return False
+
+    def _kill_browser_processes(self) -> bool:
+        """Đóng tất cả browser processes"""
+        try:
+            import psutil
+            browser_names = ['chrome.exe', 'msedge.exe', 'browser.exe']  # Không kill Firefox
+            killed = False
+            for proc in psutil.process_iter(['name', 'pid']):
+                if proc.info['name'] and proc.info['name'].lower() in browser_names:
+                    try:
+                        proc.terminate()
+                        killed = True
+                    except:
+                        pass
+            if killed:
+                time.sleep(2)  # Chờ processes đóng
+            return killed
+        except Exception as e:
+            self._log_status(f"Lỗi khi đóng browser: {e}")
+            return False
+
+    def _get_browser_path(self) -> Optional[str]:
+        """Lấy đường dẫn trình duyệt mặc định"""
+        browser_paths = {
+            BrowserType.CHROME: [
+                r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+                r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
+            ],
+            BrowserType.EDGE: [
+                r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
+                r"C:\Program Files\Microsoft\Edge\Application\msedge.exe",
+            ],
+            BrowserType.COCCOC: [
+                r"C:\Program Files\CocCoc\Browser\Application\browser.exe",
+                r"C:\Program Files (x86)\CocCoc\Browser\Application\browser.exe",
+            ],
+            BrowserType.FIREFOX: [
+                r"C:\Program Files\Mozilla Firefox\firefox.exe",
+                r"C:\Program Files (x86)\Mozilla Firefox\firefox.exe",
+            ],
+        }
+
+        paths = browser_paths.get(self._current_browser, browser_paths[BrowserType.CHROME])
+        for path in paths:
+            if os.path.exists(path):
+                return path
+        return None
+
+    def _get_user_data_dir(self) -> Optional[str]:
+        """Lấy đường dẫn user data của trình duyệt mặc định"""
+        username = os.getenv('USERNAME') or os.getenv('USER') or 'User'
+
+        user_data_dirs = {
+            BrowserType.CHROME: rf"C:\Users\{username}\AppData\Local\Google\Chrome\User Data",
+            BrowserType.EDGE: rf"C:\Users\{username}\AppData\Local\Microsoft\Edge\User Data",
+            BrowserType.COCCOC: rf"C:\Users\{username}\AppData\Local\CocCoc\Browser\User Data",
+        }
+
+        path = user_data_dirs.get(self._current_browser)
+        if path and os.path.exists(path):
+            return path
+        return None
+
+    def launch_browser_for_login(self, url: str = None, auto_close_existing: bool = False) -> bool:
+        """
+        Mở trình duyệt với Remote Debugging, sử dụng PROFILE GỐC (đã đăng nhập sẵn).
+
+        QUAN TRỌNG: Cần đóng browser hiện tại trước vì không thể dùng chung profile.
+
+        Args:
+            url: URL để mở (mặc định là Google Labs ImageFX)
+            auto_close_existing: Tự động đóng browser đang chạy
+
+        Returns:
+            True nếu mở thành công
+        """
+        # Phát hiện trình duyệt mặc định
+        self._detect_default_browser()
+
+        url = url or self.GOOGLE_LABS_URL
+        browser_path = self._get_browser_path()
+        user_data_dir = self._get_user_data_dir()
+
+        if not browser_path:
+            self._log_status(f"Không tìm thấy trình duyệt {self._browser_name}!")
+            return False
+
+        # Kiểm tra nếu đã có browser đang chạy với debug port
+        if self._is_debug_port_open():
+            self._log_status(f"✓ Trình duyệt đã sẵn sàng (port {self._debug_port})")
+            self._log_status("Bạn có thể nhấn 'Lấy Token' ngay")
+            return True
+
+        # Kiểm tra browser đang chạy (chiếm profile)
+        if self._is_browser_running():
+            if auto_close_existing:
+                self._log_status("Đang đóng trình duyệt hiện tại...")
+                self._kill_browser_processes()
+            else:
+                self._log_status("⚠ Phát hiện trình duyệt đang chạy!")
+                self._log_status("Cần đóng trình duyệt để sử dụng profile đã đăng nhập.")
+                self._log_status("→ Hãy đóng browser thủ công hoặc bật 'Tự động đóng browser'")
+                return False
+
+        self._log_status(f"Đang mở {self._browser_name} với profile gốc...")
+
+        # Build command - KHÔNG dùng Selenium
+        cmd = [browser_path]
+
+        # Thêm remote debugging port
+        if self._current_browser == BrowserType.FIREFOX:
+            cmd.extend(["--start-debugger-server", str(self._debug_port)])
+        else:
+            cmd.append(f"--remote-debugging-port={self._debug_port}")
+
+        # SỬ DỤNG PROFILE GỐC - đã có cookies đăng nhập Google
+        if user_data_dir and self._current_browser != BrowserType.FIREFOX:
+            cmd.append(f"--user-data-dir={user_data_dir}")
+            self._log_status(f"Sử dụng profile: {user_data_dir}")
+
+        cmd.append(url)
+
+        try:
+            subprocess.Popen(cmd, shell=False)
+
+            self._log_status(f"✓ Đã mở {self._browser_name}!")
+
+            if user_data_dir:
+                self._log_status("→ Nếu đã đăng nhập Google trước đó, sẽ tự động đăng nhập")
+            else:
+                self._log_status("→ Vui lòng đăng nhập tài khoản Google")
+
+            self._log_status("→ Sau đó nhấn 'Lấy Token'")
+
+            time.sleep(2)
+            return True
+
+        except Exception as e:
+            self._log_status(f"Lỗi mở trình duyệt: {e}")
+            return False
+
+    def launch_browser_auto(self, url: str = None) -> bool:
+        """
+        Mở browser với profile gốc, TỰ ĐỘNG đóng browser đang chạy.
+        Tiện lợi hơn nhưng sẽ đóng tất cả cửa sổ browser hiện tại.
+
+        Returns:
+            True nếu mở thành công
+        """
+        return self.launch_browser_for_login(url=url, auto_close_existing=True)
+
+    def get_token_from_browser(self) -> TokenResult:
+        """
+        Kết nối vào trình duyệt đang mở và lấy token.
+        Trình duyệt phải được mở bằng launch_browser_for_login() trước.
+
+        Returns:
+            TokenResult với token nếu thành công
+        """
+        try:
+            with self._lock:
+                # Kiểm tra browser có đang chạy với debug port không
+                if not self._is_debug_port_open():
+                    return TokenResult(
+                        success=False,
+                        error_message=(
+                            f"Không tìm thấy trình duyệt!\n"
+                            f"Hãy nhấn 'Mở Trình Duyệt' trước để mở browser."
+                        )
+                    )
+
+                self._log_status(f"Đang kết nối vào trình duyệt (port {self._debug_port})...")
+
+                # Kết nối vào browser đang chạy
+                options = ChromeOptions()
+                options.add_experimental_option("debuggerAddress", f"127.0.0.1:{self._debug_port}")
+                options.set_capability('goog:loggingPrefs', {'performance': 'ALL'})
+
+                try:
+                    driver = webdriver.Chrome(options=options)
+                    self._driver = driver
+                    self._is_attached = True
+                    self._current_browser = BrowserType.CHROME  # Chromium-based
+                    self._log_status("Đã kết nối vào trình duyệt!")
+                except Exception as e:
+                    return TokenResult(
+                        success=False,
+                        error_message=f"Không thể kết nối vào trình duyệt: {e}"
+                    )
+
+                # Kiểm tra xem đang ở đúng trang không
+                current_url = driver.current_url
+                if "labs.google" not in current_url:
+                    self._log_status("Đang chuyển đến Google Labs ImageFX...")
+                    driver.get(self.GOOGLE_LABS_URL)
+                    time.sleep(3)
+
+                self._log_status("Đang chờ lấy token...")
+                self._log_status("(Hãy tạo 1 ảnh bất kỳ trên trang web nếu chưa có)")
+
+                # Chờ và bắt token
+                max_wait = 120  # 2 phút
+                start_time = time.time()
+
+                while time.time() - start_time < max_wait:
+                    token = self._extract_token_from_chromium_logs(driver)
+                    if token:
+                        self._current_token = token
+                        self._token_timestamp = time.time()
+                        self._log_status("✓ Đã lấy được Bearer Token!")
+                        return TokenResult(success=True, token=token)
+
+                    time.sleep(2)
+
+                return TokenResult(
+                    success=False,
+                    error_message="Timeout - Không lấy được token.\nHãy thử tạo 1 ảnh trên trang web rồi thử lại."
+                )
+
+        except Exception as e:
+            return TokenResult(
+                success=False,
+                error_message=f"Lỗi: {str(e)}"
+            )
+
+    # ==================== KẾT THÚC PHƯƠNG THỨC MỚI ====================
 
     def _detect_default_browser(self) -> None:
         """Phát hiện và lưu trình duyệt mặc định"""
@@ -350,16 +689,26 @@ class GoogleTokenService:
         # Coi token hết hạn sau 50 phút (để có buffer)
         return (time.time() - self._token_timestamp) < 3000
 
-    def close_browser(self) -> None:
-        """Đóng trình duyệt"""
+    def close_browser(self, force: bool = False) -> None:
+        """
+        Đóng/ngắt kết nối trình duyệt
+
+        Args:
+            force: Nếu True, sẽ đóng cả browser đang attached
+        """
         with self._lock:
             if self._driver:
                 try:
-                    self._driver.quit()
+                    if self._is_attached and not force:
+                        # Chỉ ngắt kết nối Selenium, browser vẫn mở
+                        self._log_status("Đã ngắt kết nối (browser vẫn mở)")
+                    else:
+                        self._driver.quit()
+                        self._log_status("Đã đóng trình duyệt")
                 except:
                     pass
                 self._driver = None
-                self._log_status("Đã đóng trình duyệt")
+                self._is_attached = False
 
     def is_browser_open(self) -> bool:
         """Kiểm tra trình duyệt có đang mở không"""

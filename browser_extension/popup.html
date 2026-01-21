@@ -1,0 +1,221 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="UTF-8" />
+    <title>Google Token Grabber</title>
+    <style>
+      * {
+        margin: 0;
+        padding: 0;
+        box-sizing: border-box;
+      }
+
+      body {
+        width: 400px;
+        padding: 16px;
+        font-family: "Segoe UI", Tahoma, Geneva, Verdana, sans-serif;
+        background: #1a1a2e;
+        color: #eee;
+      }
+
+      .header {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        margin-bottom: 16px;
+        padding-bottom: 12px;
+        border-bottom: 1px solid #333;
+      }
+
+      .header h1 {
+        font-size: 16px;
+        font-weight: 600;
+      }
+
+      .status {
+        padding: 12px;
+        border-radius: 8px;
+        margin-bottom: 16px;
+      }
+
+      .status.success {
+        background: #1b4332;
+        border: 1px solid #2d6a4f;
+      }
+
+      .status.warning {
+        background: #5c4813;
+        border: 1px solid #8b6914;
+      }
+
+      .status.error {
+        background: #442222;
+        border: 1px solid #663333;
+      }
+
+      .status-icon {
+        font-size: 20px;
+        margin-right: 8px;
+      }
+
+      .status-text {
+        font-size: 13px;
+      }
+
+      .token-section {
+        margin-bottom: 16px;
+      }
+
+      .token-label {
+        font-size: 12px;
+        color: #888;
+        margin-bottom: 6px;
+      }
+
+      .token-box {
+        background: #0f0f1a;
+        border: 1px solid #333;
+        border-radius: 6px;
+        padding: 10px;
+        font-family: "Consolas", monospace;
+        font-size: 11px;
+        word-break: break-all;
+        max-height: 80px;
+        overflow-y: auto;
+        color: #7bed9f;
+      }
+
+      .token-box.empty {
+        color: #666;
+        font-style: italic;
+      }
+
+      .actions {
+        display: flex;
+        gap: 8px;
+      }
+
+      button {
+        flex: 1;
+        padding: 10px 16px;
+        border: none;
+        border-radius: 6px;
+        font-size: 13px;
+        font-weight: 500;
+        cursor: pointer;
+        transition: all 0.2s;
+      }
+
+      button:hover {
+        transform: translateY(-1px);
+      }
+
+      button:active {
+        transform: translateY(0);
+      }
+
+      .btn-primary {
+        background: #4361ee;
+        color: white;
+      }
+
+      .btn-primary:hover {
+        background: #3a56d4;
+      }
+
+      .btn-secondary {
+        background: #333;
+        color: #eee;
+      }
+
+      .btn-secondary:hover {
+        background: #444;
+      }
+
+      .btn-danger {
+        background: #e63946;
+        color: white;
+      }
+
+      .btn-danger:hover {
+        background: #c1121f;
+      }
+
+      .info {
+        margin-top: 16px;
+        padding-top: 12px;
+        border-top: 1px solid #333;
+        font-size: 11px;
+        color: #666;
+      }
+
+      .info a {
+        color: #4361ee;
+        text-decoration: none;
+      }
+
+      .copied {
+        position: fixed;
+        top: 50%;
+        left: 50%;
+        transform: translate(-50%, -50%);
+        background: #4CAF50;
+        color: white;
+        padding: 12px 24px;
+        border-radius: 8px;
+        font-weight: 500;
+        animation: fadeInOut 1.5s ease;
+        z-index: 100;
+      }
+
+      @keyframes fadeInOut {
+        0% { opacity: 0; transform: translate(-50%, -50%) scale(0.8); }
+        20% { opacity: 1; transform: translate(-50%, -50%) scale(1); }
+        80% { opacity: 1; }
+        100% { opacity: 0; }
+      }
+
+      .timestamp {
+        font-size: 11px;
+        color: #666;
+        margin-top: 6px;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="header">
+      <h1>Google Token Grabber</h1>
+    </div>
+
+    <div id="status" class="status error">
+      <span class="status-icon">⏳</span>
+      <span class="status-text">Đang kiểm tra...</span>
+    </div>
+
+    <div class="token-section">
+      <div class="token-label">Bearer Token:</div>
+      <div id="tokenBox" class="token-box empty">Chưa có token</div>
+      <div id="timestamp" class="timestamp"></div>
+    </div>
+
+    <div class="actions">
+      <button id="copyBtn" class="btn-primary" disabled>📋 Copy Token</button>
+      <button id="refreshBtn" class="btn-secondary">🔄 Làm mới</button>
+      <button id="clearBtn" class="btn-danger">🗑️ Xóa</button>
+    </div>
+
+    <div class="info">
+      <strong>Hướng dẫn:</strong><br />
+      1. Mở <a href="https://labs.google/fx/tools/image-fx" target="_blank">Google Labs ImageFX</a><br />
+      2. Đăng nhập Google (nếu chưa)<br />
+      3. Tạo 1 ảnh bất kỳ để tạo request<br />
+      4. Token sẽ tự động được bắt!
+    </div>
+
+    <div id="copiedMsg" class="copied" style="display: none">
+      ✓ Đã copy!
+    </div>
+
+    <script src="popup.js"></script>
+  </body>
+</html>
